@@ -303,7 +303,12 @@ def write_tables_to_excel(
             ws.append([None])
         ws.append([header])
         for r in rows:
-            ws.append([None if (c is None or str(c).strip() == "") else _coerce_numeric(c) for c in r])
+            # Safety: ensure a string row is treated as a single cell, not split into characters
+            r = _ensure_row_list(r)
+            ws.append([
+                None if (c is None or str(c).strip() == "") else _coerce_numeric(c)
+                for c in r
+            ])
 
     for pdf_path, page_tables in extracted:
         for idx, (page_num, rows) in enumerate(page_tables, start=1):

@@ -221,10 +221,12 @@ def write_results_to_excel(
     ws_fin = wb.create_sheet(title="financials")
 
     headers = ["pdf", "page", "graph_index", "description"]
-    ws_ref.append(headers)
-    ws_fin.append(headers)
+    # Ensure headers are appended as a row, not split into characters
+    ws_ref.append(list(headers))
+    ws_fin.append(list(headers))
 
     for pdf_path, page_num, graph_idx, desc, is_fin in results:
+        # Safety: coerce any accidental scalar row into a list so strings aren't split
         row = [pdf_path.name, page_num, graph_idx, desc]
         if is_fin:
             ws_fin.append(row)
