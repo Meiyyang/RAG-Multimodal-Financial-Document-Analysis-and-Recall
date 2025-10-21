@@ -74,6 +74,27 @@ for element in raw_pdf_elements:
 
 Creating the Element data structure enables convenient storage of the additional information, which can be beneficial for identifying the source of each answer, whether it is derived from texts, tables, or figures.
 
+### Excel workflow (replace Deep Lake for tables)
+
+If you prefer to process financial tables directly in Excel instead of storing them in Deep Lake, use the provided utility to extract all tables from one or more PDFs into a single `.xlsx` workbook. It applies a lightweight heuristic to keep only likely financial tables (e.g., income statement, balance sheet, cash flows) when requested.
+
+Install minimal dependencies:
+
+```
+pip install -r requirements.txt
+```
+
+Run the extractor on Tesla's Q3 PDF (produces `TSLA-Q3-2023-Update-3-tables.xlsx`):
+
+```
+python3 pdf_tables_to_excel.py -i TSLA-Q3-2023-Update-3.pdf --financial-only
+```
+
+Notes:
+- Without `--financial-only` it will include all detected tables.
+- Multiple inputs are supported (files, folders, or globs); output defaults to `combined-tables.xlsx`.
+- An index sheet named `Tables_Index` lists each extracted table with source PDF, page, and dimensions.
+
 ## 2. Graphs
 
 The next step is gathering information from the charts to add context. The primary challenge is extracting images from the pages to feed into OpenAI's endpoint. A practical approach is to convert the PDF to images and pass each page to the model, inquiring if it detects any graphs. If it identifies one or more charts, the model can describe the data and the trends they represent. If no graphs are detected, the model will return an empty array as an indication.
