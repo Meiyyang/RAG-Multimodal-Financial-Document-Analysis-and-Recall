@@ -8,6 +8,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import pdfplumber
 from tqdm import tqdm
 from openpyxl import Workbook
+from openpyxl.chart import LineChart, Reference
 from openpyxl.utils import get_column_letter
 
 
@@ -57,13 +58,45 @@ def cell_has_letters(value: Optional[str]) -> bool:
     return bool(re.search(r"[A-Za-z]", str(value)))
 
 
+def _row_len_maybe_scalar(row: object) -> int:
+    """Return number of logical cells in a row.
+
+    Some PDF extraction strategies occasionally return a scalar string for an
+    entire row (e.g., "HIGHLIGHTS"). In those cases, we consider the row to have
+    a single cell rather than splitting the string into characters.
+    """
+    if isinstance(row, (list, tuple)):
+        return len(row)  # already a list of cells
+    # scalar (str/None/number) -> treat as single cell
+    return 1
+
+
+def _ensure_row_list(row: object) -> List[Optional[str]]:
+    """Convert an extracted row into a list of cells without splitting strings.
+
+    If a row is a scalar string (or any non-list type), wrap it in a list so we
+    append the whole sentence to a single cell in Excel.
+    """
+    if isinstance(row, (list, tuple)):
+        return list(row)
+    return [row]  # single cell containing the full value
+
+
 def normalize_rows(rows: List[List[Optional[str]]]) -> List[List[Optional[str]]]:
+    """Pad rows to have equal length and keep sentences intact.
+
+    - Ensures scalar rows are treated as a single cell (prevents character-
+      by-character splitting in Excel).
+    - Applies basic trimming while preserving None values.
+    """
     if not rows:
         return rows
-    max_len = max(len(r) for r in rows)
+
+    max_len = max(_row_len_maybe_scalar(r) for r in rows)
     out: List[List[Optional[str]]] = []
     for r in rows:
-        padded = list(r) + [None] * (max_len - len(r))
+        cells = _ensure_row_list(r)
+        padded = list(cells) + [None] * (max_len - len(cells))
         cleaned = [str(c).strip() if c is not None else None for c in padded]
         out.append(cleaned)
     return out
@@ -184,44 +217,185 @@ def autosize_columns(ws) -> None:
         ws.column_dimensions[get_column_letter(idx)].width = min(max(width + 2, 10), 60)
 
 
+def _coerce_numeric(value: Optional[str]):
+    """Convert common numeric strings to numbers when possible.
+
+    Handles:
+    - Thousands separators and currency symbols ($, €, £)
+    - Percent values (kept as numeric, e.g., '7.6%' -> 7.6)
+    - K/M/B suffixes (1.2M -> 1_200_000)
+    - Parentheses for negatives: (123) -> -123
+    Returns the converted number or the original value if not parseable.
+    """
+    if value is None:
+        return None
+    s = str(value).strip()
+    if s == "":
+        return None
+
+    # Normalize unicode minus and whitespace
+    s_clean = s.replace("\u2212", "-")
+    # Remove currency symbols and spaces
+    s_clean = re.sub(r"[\s$€£]", "", s_clean)
+
+    # Detect negative in parentheses
+    negative = False
+    if s_clean.startswith("(") and s_clean.endswith(")"):
+        negative = True
+        s_clean = s_clean[1:-1]
+
+    # Handle suffix multipliers
+    multiplier = 1.0
+    if re.search(r"[Kk]$", s_clean):
+        multiplier = 1_000.0
+        s_clean = s_clean[:-1]
+    elif re.search(r"[Mm]$", s_clean):
+        multiplier = 1_000_000.0
+        s_clean = s_clean[:-1]
+    elif re.search(r"[Bb]$", s_clean):
+        multiplier = 1_000_000_000.0
+        s_clean = s_clean[:-1]
+
+    # Percent
+    is_percent = False
+    if s_clean.endswith("%"):
+        is_percent = True
+        s_clean = s_clean[:-1]
+
+    # Remove thousands separators
+    s_clean = s_clean.replace(",", "")
+
+    # Sometimes there are footnote markers like "1" or "†" at the end
+    s_clean = re.sub(r"[^0-9.+\-]", "", s_clean)
+
+    try:
+        num = float(s_clean) * multiplier
+        if negative:
+            num = -num
+        # Keep percents as their numeric value (e.g., 7.6)
+        return num
+    except Exception:
+        return value
+
+
 def write_tables_to_excel(
     extracted: List[Tuple[Path, List[Tuple[int, List[List[Optional[str]]]]]]],
     output_path: Path,
     only_financial: bool,
 ) -> None:
+    """Write all extracted tables into two sheets: References and Financials.
+
+    - Keeps sentences in the same cells (no character splitting)
+    - Aggregates ALL non-financial tables into a single "References" sheet
+    - Aggregates ALL financial tables into a single "Financials" sheet
+    - Adds lightweight separators with source metadata between tables
+    """
     wb = Workbook()
     default_ws = wb.active
     wb.remove(default_ws)
 
-    used_sheet_names: set = set()
-    index_rows: List[Dict[str, object]] = []
+    ws_ref = wb.create_sheet(title="References")
+    ws_fin = wb.create_sheet(title="Financials")
+
+    def append_table(ws, header: str, rows: List[List[Optional[str]]]):
+        # Separator and source header
+        if ws.max_row > 1:
+            ws.append([None])
+        ws.append([header])
+        for r in rows:
+            ws.append([None if (c is None or str(c).strip() == "") else _coerce_numeric(c) for c in r])
 
     for pdf_path, page_tables in extracted:
         for idx, (page_num, rows) in enumerate(page_tables, start=1):
-            if only_financial and not is_financial_table_rows(rows):
-                continue
-            base_name = f"{pdf_path.stem}_p{page_num}_t{idx}"
-            sheet_name = make_unique_sheet_name(base_name, used_sheet_names)
-            ws = wb.create_sheet(title=sheet_name)
-            for r in rows:
-                ws.append([None if (c is None or str(c).strip() == '') else c for c in r])
-            autosize_columns(ws)
-            index_rows.append(
-                {
-                    "sheet": sheet_name,
-                    "pdf_file": str(pdf_path.name),
-                    "page": int(page_num),
-                    "rows": int(len(rows)),
-                    "cols": int(len(rows[0]) if rows else 0),
-                }
-            )
+            # Normalize rows first to avoid character splitting
+            rows = normalize_rows(rows)
 
-    # Index sheet
-    ws_idx = wb.create_sheet(title="Tables_Index", index=0)
-    ws_idx.append(["sheet", "pdf_file", "page", "rows", "cols"])
-    for entry in sorted(index_rows, key=lambda x: (x["pdf_file"], x["page"], x["sheet"])):
-        ws_idx.append([entry["sheet"], entry["pdf_file"], entry["page"], entry["rows"], entry["cols"]])
-    autosize_columns(ws_idx)
+            is_fin = is_financial_table_rows(rows)
+            if only_financial and not is_fin:
+                continue
+            header = f"Source: {pdf_path.name}  page {page_num}  table {idx}"
+            if is_fin:
+                append_table(ws_fin, header, rows)
+            else:
+                append_table(ws_ref, header, rows)
+
+    autosize_columns(ws_ref)
+    autosize_columns(ws_fin)
+
+    # Try to create a line chart on a dedicated sheet with requested metrics
+    try:
+        ws_chart = wb.create_sheet(title="Charts")
+
+        def find_row(pattern: str) -> Optional[int]:
+            pat = pattern.lower()
+            for r_idx, row in enumerate(ws_fin.iter_rows(values_only=True), start=1):
+                text = " ".join(str(c) for c in row if c is not None).lower()
+                if pat in text:
+                    return r_idx
+            return None
+
+        def first_numeric_span(row_values: List[object]) -> Optional[Tuple[int, int]]:
+            start = None
+            end = None
+            for c_idx, v in enumerate(row_values, start=1):
+                is_num = isinstance(v, (int, float))
+                if is_num and start is None:
+                    start = c_idx
+                    end = c_idx
+                elif is_num and start is not None:
+                    end = c_idx
+                elif not is_num and start is not None:
+                    # stop at first gap after a numeric span
+                    break
+            if start is None:
+                return None
+            return (start, end)
+
+        targets = [
+            ("total reven", "Total Revenue"),
+            ("gross margin", "Total Gross Margin"),
+            ("operating margin", "Operating Margin"),
+            ("adjusted ebitda margin", "Adjusted EBITDA Margin"),
+        ]
+
+        # Build one combined line chart with all requested series, when available
+        chart = LineChart()
+        chart.title = "Selected Financial Metrics"
+        chart.style = 10
+        chart.y_axis.title = "Value"
+        chart.x_axis.title = "Period"
+
+        # We will set categories from the first metric that has a plausible header row
+        categories_set = False
+
+        for needle, series_name in targets:
+            row_idx = find_row(needle)
+            if row_idx is None:
+                continue
+            row_vals = [cell.value for cell in ws_fin[row_idx]]
+            span = first_numeric_span(row_vals)
+            if not span:
+                continue
+            start_col, end_col = span
+
+            # categories: row above the metric row, same span
+            if not categories_set and row_idx > 1:
+                cats_ref = Reference(ws_fin, min_col=start_col, max_col=end_col, min_row=row_idx - 1, max_row=row_idx - 1)
+                chart.set_categories(cats_ref)
+                categories_set = True
+
+            values_ref = Reference(ws_fin, min_col=start_col, max_col=end_col, min_row=row_idx, max_row=row_idx)
+            chart.add_data(values_ref, titles_from_data=False)
+            # Rename the last added series to series_name
+            if chart.series:
+                chart.series[-1].title = series_name
+
+        if chart.series:
+            ws_chart.add_chart(chart, "A1")
+            autosize_columns(ws_chart)
+    except Exception:
+        # Chart creation is best-effort; ignore errors in unusual layouts
+        pass
 
     wb.save(output_path)
 
