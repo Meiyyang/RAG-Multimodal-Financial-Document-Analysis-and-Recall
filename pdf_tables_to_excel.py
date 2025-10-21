@@ -283,19 +283,19 @@ def write_tables_to_excel(
     output_path: Path,
     only_financial: bool,
 ) -> None:
-    """Write all extracted tables into two sheets: References and Financials.
+    """Write all extracted tables into two sheets: reference and financials.
 
     - Keeps sentences in the same cells (no character splitting)
-    - Aggregates ALL non-financial tables into a single "References" sheet
-    - Aggregates ALL financial tables into a single "Financials" sheet
+    - Aggregates ALL non-financial tables into a single "reference" sheet
+    - Aggregates ALL financial tables into a single "financials" sheet
     - Adds lightweight separators with source metadata between tables
     """
     wb = Workbook()
     default_ws = wb.active
     wb.remove(default_ws)
 
-    ws_ref = wb.create_sheet(title="References")
-    ws_fin = wb.create_sheet(title="Financials")
+    ws_ref = wb.create_sheet(title="reference")
+    ws_fin = wb.create_sheet(title="financials")
 
     def append_table(ws, header: str, rows: List[List[Optional[str]]]):
         # Separator and source header
@@ -322,81 +322,7 @@ def write_tables_to_excel(
     autosize_columns(ws_ref)
     autosize_columns(ws_fin)
 
-    # Try to create a line chart on a dedicated sheet with requested metrics
-    try:
-        ws_chart = wb.create_sheet(title="Charts")
-
-        def find_row(pattern: str) -> Optional[int]:
-            pat = pattern.lower()
-            for r_idx, row in enumerate(ws_fin.iter_rows(values_only=True), start=1):
-                text = " ".join(str(c) for c in row if c is not None).lower()
-                if pat in text:
-                    return r_idx
-            return None
-
-        def first_numeric_span(row_values: List[object]) -> Optional[Tuple[int, int]]:
-            start = None
-            end = None
-            for c_idx, v in enumerate(row_values, start=1):
-                is_num = isinstance(v, (int, float))
-                if is_num and start is None:
-                    start = c_idx
-                    end = c_idx
-                elif is_num and start is not None:
-                    end = c_idx
-                elif not is_num and start is not None:
-                    # stop at first gap after a numeric span
-                    break
-            if start is None:
-                return None
-            return (start, end)
-
-        targets = [
-            ("total reven", "Total Revenue"),
-            ("gross margin", "Total Gross Margin"),
-            ("operating margin", "Operating Margin"),
-            ("adjusted ebitda margin", "Adjusted EBITDA Margin"),
-        ]
-
-        # Build one combined line chart with all requested series, when available
-        chart = LineChart()
-        chart.title = "Selected Financial Metrics"
-        chart.style = 10
-        chart.y_axis.title = "Value"
-        chart.x_axis.title = "Period"
-
-        # We will set categories from the first metric that has a plausible header row
-        categories_set = False
-
-        for needle, series_name in targets:
-            row_idx = find_row(needle)
-            if row_idx is None:
-                continue
-            row_vals = [cell.value for cell in ws_fin[row_idx]]
-            span = first_numeric_span(row_vals)
-            if not span:
-                continue
-            start_col, end_col = span
-
-            # categories: row above the metric row, same span
-            if not categories_set and row_idx > 1:
-                cats_ref = Reference(ws_fin, min_col=start_col, max_col=end_col, min_row=row_idx - 1, max_row=row_idx - 1)
-                chart.set_categories(cats_ref)
-                categories_set = True
-
-            values_ref = Reference(ws_fin, min_col=start_col, max_col=end_col, min_row=row_idx, max_row=row_idx)
-            chart.add_data(values_ref, titles_from_data=False)
-            # Rename the last added series to series_name
-            if chart.series:
-                chart.series[-1].title = series_name
-
-        if chart.series:
-            ws_chart.add_chart(chart, "A1")
-            autosize_columns(ws_chart)
-    except Exception:
-        # Chart creation is best-effort; ignore errors in unusual layouts
-        pass
-
+    # Save with only the two required sheets
     wb.save(output_path)
 
 
