@@ -52,12 +52,14 @@ FINANCIAL_KEYWORDS = [
 ]
 
 
+# Check if a value contains any alphabetic characters.
 def cell_has_letters(value: Optional[str]) -> bool:
     if value is None:
         return False
     return bool(re.search(r"[A-Za-z]", str(value)))
 
 
+# Return logical cell count for a row, treating scalars as single cells.
 def _row_len_maybe_scalar(row: object) -> int:
     """Return number of logical cells in a row.
 
@@ -71,6 +73,7 @@ def _row_len_maybe_scalar(row: object) -> int:
     return 1
 
 
+# Ensure extracted row is a list of cells; wrap scalars to preserve sentences.
 def _ensure_row_list(row: object) -> List[Optional[str]]:
     """Convert an extracted row into a list of cells without splitting strings.
 
@@ -82,6 +85,7 @@ def _ensure_row_list(row: object) -> List[Optional[str]]:
     return [row]  # single cell containing the full value
 
 
+# Normalize and pad rows to equal length while preserving sentences.
 def normalize_rows(rows: List[List[Optional[str]]]) -> List[List[Optional[str]]]:
     """Pad rows to have equal length and keep sentences intact.
 
@@ -102,6 +106,7 @@ def normalize_rows(rows: List[List[Optional[str]]]) -> List[List[Optional[str]]]
     return out
 
 
+# Heuristically determine if the first row looks like a header row.
 def detect_header_row(rows: List[List[Optional[str]]]) -> bool:
     if len(rows) < 2:
         return False
@@ -112,6 +117,7 @@ def detect_header_row(rows: List[List[Optional[str]]]) -> bool:
     return first_row_letter_ratio >= second_row_letter_ratio
 
 
+# Extract tables from a single PDF page using multiple strategies.
 def extract_tables_from_page(page: pdfplumber.page.Page) -> List[List[List[Optional[str]]]]:
     strategies: List[Dict[str, str]] = [
         {"vertical_strategy": "lines", "horizontal_strategy": "lines"},
@@ -140,6 +146,7 @@ def extract_tables_from_page(page: pdfplumber.page.Page) -> List[List[List[Optio
     return []
 
 
+# Extract tables from all pages of a PDF, filtering out very small tables.
 def extract_tables_from_pdf(pdf_path: Path, min_columns: int = 2) -> List[Tuple[int, List[List[Optional[str]]]]]:
     results: List[Tuple[int, List[List[Optional[str]]]]] = []
     with pdfplumber.open(str(pdf_path)) as pdf:
@@ -156,6 +163,7 @@ def extract_tables_from_pdf(pdf_path: Path, min_columns: int = 2) -> List[Tuple[
     return results
 
 
+# Identify whether a table likely contains financial data using keywords.
 def is_financial_table_rows(rows: List[List[Optional[str]]]) -> bool:
     if not rows:
         return False
@@ -168,6 +176,7 @@ def is_financial_table_rows(rows: List[List[Optional[str]]]) -> bool:
     return any(keyword in text_sample for keyword in FINANCIAL_KEYWORDS)
 
 
+# Resolve inputs (files/dirs/globs) into a unique list of PDF paths.
 def collect_pdfs(inputs: List[str]) -> List[Path]:
     pdfs: List[Path] = []
     for inp in inputs:
@@ -188,12 +197,14 @@ def collect_pdfs(inputs: List[str]) -> List[Path]:
     return unique_pdfs
 
 
+# Produce a valid Excel sheet name by removing/transforming invalid characters.
 def sanitize_sheet_name(name: str) -> str:
     invalid = set('[]:*?/\\')
     cleaned = ''.join('_' if c in invalid else c for c in name)
     return cleaned[:31] if len(cleaned) > 31 else cleaned
 
 
+# Make a unique, Excel-compliant sheet name; append numeric suffixes if needed.
 def make_unique_sheet_name(base: str, used: set) -> str:
     base = sanitize_sheet_name(base)
     name = base
@@ -207,6 +218,7 @@ def make_unique_sheet_name(base: str, used: set) -> str:
     return name
 
 
+# Auto-size Excel worksheet columns based on the maximum content width.
 def autosize_columns(ws) -> None:
     widths: Dict[int, int] = {}
     for row in ws.iter_rows(values_only=True):
@@ -217,6 +229,7 @@ def autosize_columns(ws) -> None:
         ws.column_dimensions[get_column_letter(idx)].width = min(max(width + 2, 10), 60)
 
 
+# Convert numeric-looking strings (currency, percent, K/M/B, parentheses) to numbers.
 def _coerce_numeric(value: Optional[str]):
     """Convert common numeric strings to numbers when possible.
 
@@ -278,6 +291,7 @@ def _coerce_numeric(value: Optional[str]):
         return value
 
 
+# Write extracted tables to Excel and create a chart when possible.
 def write_tables_to_excel(
     extracted: List[Tuple[Path, List[Tuple[int, List[List[Optional[str]]]]]]],
     output_path: Path,
@@ -297,6 +311,7 @@ def write_tables_to_excel(
     ws_ref = wb.create_sheet(title="References")
     ws_fin = wb.create_sheet(title="Financials")
 
+    # Append a table with a source header and numeric coercion.
     def append_table(ws, header: str, rows: List[List[Optional[str]]]):
         # Separator and source header
         if ws.max_row > 1:
@@ -326,6 +341,7 @@ def write_tables_to_excel(
     try:
         ws_chart = wb.create_sheet(title="Charts")
 
+        # Find the first row in the 'Financials' sheet containing the pattern.
         def find_row(pattern: str) -> Optional[int]:
             pat = pattern.lower()
             for r_idx, row in enumerate(ws_fin.iter_rows(values_only=True), start=1):
@@ -334,6 +350,7 @@ def write_tables_to_excel(
                     return r_idx
             return None
 
+        # Locate the first contiguous span of numeric cells in a row.
         def first_numeric_span(row_values: List[object]) -> Optional[Tuple[int, int]]:
             start = None
             end = None
@@ -400,6 +417,7 @@ def write_tables_to_excel(
     wb.save(output_path)
 
 
+# CLI entry point: parse args, extract tables, and save workbook.
 def main(argv: Optional[Iterable[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Extract all tables from one or more PDFs into an Excel workbook.",
